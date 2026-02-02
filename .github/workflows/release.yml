@@ -18,6 +18,11 @@ on:
 permissions:
   contents: write
 
+env:
+  R2_BUCKET: agentstash-releases
+  R2_ENDPOINT: https://4ebddd5e5e333cde8ec99cb72932baba.r2.cloudflarestorage.com
+  R2_PUBLIC_URL: https://releases.agentstash.dev
+
 jobs:
   build-macos:
     strategy:
@@ -49,7 +54,7 @@ jobs:
 
       - name: Configure updater endpoint for RC
         run: |
-          jq '.plugins.updater.endpoints = ["https://github.com/ianchenx/agentstash-releases-rc/releases/latest/download/latest.json"]' \
+          jq '.plugins.updater.endpoints = ["${{ env.R2_PUBLIC_URL }}/rc/latest.json"]' \
             src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
 
       - name: Setup Node
@@ -75,7 +80,7 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
-      - name: Build and Release
+      - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -88,6 +93,44 @@ jobs:
           prerelease: true
           includeUpdaterJson: true
           args: --target ${{ matrix.target }}
+
+      - name: Upload artifacts to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_REGION: auto
+        run: |
+          VERSION="${{ steps.params.outputs.version }}"
+          TARGET="${{ matrix.target }}"
+          
+          # Find build artifacts
+          BUNDLE_DIR="src-tauri/target/${TARGET}/release/bundle"
+          
+          # Upload .dmg
+          for dmg in ${BUNDLE_DIR}/dmg/*.dmg; do
+            if [ -f "$dmg" ]; then
+              FILENAME=$(basename "$dmg")
+              aws s3 cp "$dmg" "s3://${{ env.R2_BUCKET }}/rc/v${VERSION}/${FILENAME}" \
+                --endpoint-url "${{ env.R2_ENDPOINT }}"
+              echo "Uploaded: $FILENAME"
+            fi
+          done
+          
+          # Upload .app.tar.gz and .app.tar.gz.sig (for updater)
+          for tarball in ${BUNDLE_DIR}/macos/*.tar.gz*; do
+            if [ -f "$tarball" ]; then
+              FILENAME=$(basename "$tarball")
+              aws s3 cp "$tarball" "s3://${{ env.R2_BUCKET }}/rc/v${VERSION}/${FILENAME}" \
+                --endpoint-url "${{ env.R2_ENDPOINT }}"
+              echo "Uploaded: $FILENAME"
+            fi
+          done
+
+      - name: Upload artifact info
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-info-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.tar.gz
 
   publish-release:
     needs: build-macos
@@ -102,7 +145,64 @@ jobs:
             echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Publish release
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate and upload latest.json to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_REGION: auto
+        run: |
+          VERSION="${{ steps.params.outputs.version }}"
+          BASE_URL="${{ env.R2_PUBLIC_URL }}/rc/v${VERSION}"
+          
+          # Find the signature files
+          AARCH64_SIG=$(find artifacts -name "*aarch64*.tar.gz.sig" -type f 2>/dev/null | head -1)
+          X86_64_SIG=$(find artifacts -name "*x86_64*.tar.gz.sig" -type f 2>/dev/null | head -1)
+          
+          # Read signatures (base64 encoded)
+          AARCH64_SIGNATURE=""
+          X86_64_SIGNATURE=""
+          
+          if [ -f "$AARCH64_SIG" ]; then
+            AARCH64_SIGNATURE=$(cat "$AARCH64_SIG")
+          fi
+          if [ -f "$X86_64_SIG" ]; then
+            X86_64_SIGNATURE=$(cat "$X86_64_SIG")
+          fi
+          
+          # Generate latest.json
+          cat > latest.json << EOF
+          {
+            "version": "${VERSION}",
+            "notes": "Release Candidate v${VERSION}",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "darwin-aarch64": {
+                "url": "${BASE_URL}/AgentStash.app.tar.gz",
+                "signature": "${AARCH64_SIGNATURE}"
+              },
+              "darwin-x86_64": {
+                "url": "${BASE_URL}/AgentStash_x64.app.tar.gz",
+                "signature": "${X86_64_SIGNATURE}"
+              }
+            }
+          }
+          EOF
+          
+          cat latest.json
+          
+          # Upload latest.json to R2
+          aws s3 cp latest.json "s3://${{ env.R2_BUCKET }}/rc/latest.json" \
+            --endpoint-url "${{ env.R2_ENDPOINT }}" \
+            --content-type "application/json"
+          
+          echo "Uploaded latest.json to R2"
+
+      - name: Publish GitHub release
         uses: actions/github-script@v7
         with:
           script: |
