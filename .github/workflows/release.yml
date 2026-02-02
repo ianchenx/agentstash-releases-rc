@@ -43,13 +43,13 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
         with:
-          repository: ianchenx/ai-code-sync
+          repository: ianchenx/agentstash
           token: ${{ secrets.SOURCE_REPO_TOKEN }}
           ref: ${{ steps.params.outputs.ref }}
 
       - name: Configure updater endpoint for RC
         run: |
-          jq '.plugins.updater.endpoints = ["https://github.com/ianchenx/agent-sync-releases-rc/releases/latest/download/latest.json"]' \
+          jq '.plugins.updater.endpoints = ["https://github.com/ianchenx/agentstash-releases-rc/releases/latest/download/latest.json"]' \
             src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
 
       - name: Setup Node
@@ -83,7 +83,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v${{ steps.params.outputs.version }}
-          releaseName: 'AgentSync v${{ steps.params.outputs.version }} (RC)'
+          releaseName: 'AgentStash v${{ steps.params.outputs.version }} (RC)'
           releaseBody: 'Release Candidate - for testing only'
           releaseDraft: true
           prerelease: true
