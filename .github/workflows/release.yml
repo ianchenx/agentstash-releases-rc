@@ -104,9 +104,14 @@ jobs:
         run: |
           VERSION="${{ steps.params.outputs.version }}"
           TARGET="${{ matrix.target }}"
-          
-          # Find build artifacts
           BUNDLE_DIR="src-tauri/target/${TARGET}/release/bundle"
+          
+          # Determine suffix based on architecture
+          if [ "$TARGET" = "x86_64-apple-darwin" ]; then
+            SUFFIX="_x64"
+          else
+            SUFFIX=""
+          fi
           
           # Upload .dmg
           for dmg in ${BUNDLE_DIR}/dmg/*.dmg; do
@@ -118,21 +123,21 @@ jobs:
             fi
           done
           
-          # Upload .app.tar.gz and .app.tar.gz.sig (for updater)
-          for tarball in ${BUNDLE_DIR}/macos/*.tar.gz*; do
-            if [ -f "$tarball" ]; then
-              FILENAME=$(basename "$tarball")
-              aws s3 cp "$tarball" "s3://${{ env.R2_BUCKET }}/rc/v${VERSION}/${FILENAME}" \
-                --endpoint-url "${{ env.R2_ENDPOINT }}"
-              echo "Uploaded: $FILENAME"
-            fi
-          done
-
-      - name: Upload artifact info
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-info-${{ matrix.target }}
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.tar.gz*
+          # Upload tarball with architecture suffix
+          TARBALL="${BUNDLE_DIR}/macos/AgentStash.app.tar.gz"
+          if [ -f "$TARBALL" ]; then
+            aws s3 cp "$TARBALL" "s3://${{ env.R2_BUCKET }}/rc/v${VERSION}/AgentStash${SUFFIX}.app.tar.gz" \
+              --endpoint-url "${{ env.R2_ENDPOINT }}"
+            echo "Uploaded: AgentStash${SUFFIX}.app.tar.gz"
+          fi
+          
+          # Upload signature with architecture suffix
+          SIG="${BUNDLE_DIR}/macos/AgentStash.app.tar.gz.sig"
+          if [ -f "$SIG" ]; then
+            aws s3 cp "$SIG" "s3://${{ env.R2_BUCKET }}/rc/v${VERSION}/AgentStash${SUFFIX}.app.tar.gz.sig" \
+              --endpoint-url "${{ env.R2_ENDPOINT }}"
+            echo "Uploaded: AgentStash${SUFFIX}.app.tar.gz.sig"
+          fi
 
   publish-release:
     needs: build-macos
@@ -147,11 +152,6 @@ jobs:
             echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
       - name: Generate and upload latest.json to R2
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -161,20 +161,9 @@ jobs:
           VERSION="${{ steps.params.outputs.version }}"
           BASE_URL="${{ env.R2_PUBLIC_URL }}/rc/v${VERSION}"
           
-          # Find the signature files
-          AARCH64_SIG=$(find artifacts -name "*aarch64*.tar.gz.sig" -type f 2>/dev/null | head -1)
-          X86_64_SIG=$(find artifacts -name "*x86_64*.tar.gz.sig" -type f 2>/dev/null | head -1)
-          
-          # Read signatures (base64 encoded)
-          AARCH64_SIGNATURE=""
-          X86_64_SIGNATURE=""
-          
-          if [ -f "$AARCH64_SIG" ]; then
-            AARCH64_SIGNATURE=$(cat "$AARCH64_SIG")
-          fi
-          if [ -f "$X86_64_SIG" ]; then
-            X86_64_SIGNATURE=$(cat "$X86_64_SIG")
-          fi
+          # Fetch signatures from R2
+          AARCH64_SIGNATURE=$(curl -sf "${BASE_URL}/AgentStash.app.tar.gz.sig" || echo "")
+          X86_64_SIGNATURE=$(curl -sf "${BASE_URL}/AgentStash_x64.app.tar.gz.sig" || echo "")
           
           # Generate latest.json
           cat > latest.json << EOF
