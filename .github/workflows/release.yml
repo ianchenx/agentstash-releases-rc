@@ -86,6 +86,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CARGO_TERM_QUIET: "true"
         with:
           tagName: v${{ steps.params.outputs.version }}
           releaseName: 'AgentStash v${{ steps.params.outputs.version }} (RC)'
