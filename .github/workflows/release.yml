@@ -80,7 +80,7 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
-      - name: Build Tauri app
+      - name: Build and Release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -96,50 +96,7 @@ jobs:
           includeUpdaterJson: true
           args: --target ${{ matrix.target }}
 
-      - name: Upload artifacts to R2
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_REGION: auto
-        run: |
-          VERSION="${{ steps.params.outputs.version }}"
-          TARGET="${{ matrix.target }}"
-          BUNDLE_DIR="src-tauri/target/${TARGET}/release/bundle"
-          
-          # Determine suffix based on architecture
-          if [ "$TARGET" = "x86_64-apple-darwin" ]; then
-            SUFFIX="_x64"
-          else
-            SUFFIX=""
-          fi
-          
-          # Upload .dmg
-          for dmg in ${BUNDLE_DIR}/dmg/*.dmg; do
-            if [ -f "$dmg" ]; then
-              FILENAME=$(basename "$dmg")
-              aws s3 cp "$dmg" "s3://${{ env.R2_BUCKET }}/rc/v${VERSION}/${FILENAME}" \
-                --endpoint-url "${{ env.R2_ENDPOINT }}"
-              echo "Uploaded: $FILENAME"
-            fi
-          done
-          
-          # Upload tarball with architecture suffix
-          TARBALL="${BUNDLE_DIR}/macos/AgentStash.app.tar.gz"
-          if [ -f "$TARBALL" ]; then
-            aws s3 cp "$TARBALL" "s3://${{ env.R2_BUCKET }}/rc/v${VERSION}/AgentStash${SUFFIX}.app.tar.gz" \
-              --endpoint-url "${{ env.R2_ENDPOINT }}"
-            echo "Uploaded: AgentStash${SUFFIX}.app.tar.gz"
-          fi
-          
-          # Upload signature with architecture suffix
-          SIG="${BUNDLE_DIR}/macos/AgentStash.app.tar.gz.sig"
-          if [ -f "$SIG" ]; then
-            aws s3 cp "$SIG" "s3://${{ env.R2_BUCKET }}/rc/v${VERSION}/AgentStash${SUFFIX}.app.tar.gz.sig" \
-              --endpoint-url "${{ env.R2_ENDPOINT }}"
-            echo "Uploaded: AgentStash${SUFFIX}.app.tar.gz.sig"
-          fi
-
-  publish-release:
+  sync-to-r2:
     needs: build-macos
     runs-on: ubuntu-latest
     steps:
@@ -152,66 +109,39 @@ jobs:
             echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Generate and upload latest.json to R2
+      - name: Publish release and sync to R2
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_REGION: auto
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ steps.params.outputs.version }}"
-          BASE_URL="${{ env.R2_PUBLIC_URL }}/rc/v${VERSION}"
           
-          # Fetch signatures from R2
-          AARCH64_SIGNATURE=$(curl -sf "${BASE_URL}/AgentStash.app.tar.gz.sig" || echo "")
-          X86_64_SIGNATURE=$(curl -sf "${BASE_URL}/AgentStash_x64.app.tar.gz.sig" || echo "")
+          # Publish the draft release first
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases --jq ".[] | select(.draft and .tag_name == \"v${VERSION}\") | .id")
+          if [ -n "$RELEASE_ID" ]; then
+            gh api repos/${{ github.repository }}/releases/${RELEASE_ID} -X PATCH -f draft=false
+            echo "Published release v${VERSION}"
+          fi
           
-          # Generate latest.json
-          cat > latest.json << EOF
-          {
-            "version": "${VERSION}",
-            "notes": "Release Candidate v${VERSION}",
-            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "platforms": {
-              "darwin-aarch64": {
-                "url": "${BASE_URL}/AgentStash.app.tar.gz",
-                "signature": "${AARCH64_SIGNATURE}"
-              },
-              "darwin-x86_64": {
-                "url": "${BASE_URL}/AgentStash_x64.app.tar.gz",
-                "signature": "${X86_64_SIGNATURE}"
-              }
-            }
-          }
-          EOF
+          # Download all release assets
+          mkdir -p assets
+          gh release download "v${VERSION}" --dir assets --repo ${{ github.repository }}
           
-          cat latest.json
+          # Upload all assets to R2
+          for file in assets/*; do
+            FILENAME=$(basename "$file")
+            aws s3 cp "$file" "s3://${{ env.R2_BUCKET }}/rc/v${VERSION}/${FILENAME}" \
+              --endpoint-url "${{ env.R2_ENDPOINT }}"
+            echo "Uploaded: $FILENAME"
+          done
           
-          # Upload latest.json to R2
-          aws s3 cp latest.json "s3://${{ env.R2_BUCKET }}/rc/latest.json" \
-            --endpoint-url "${{ env.R2_ENDPOINT }}" \
-            --content-type "application/json"
-          
-          echo "Uploaded latest.json to R2"
-
-      - name: Publish GitHub release
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const releases = await github.rest.repos.listReleases({
-              owner: context.repo.owner,
-              repo: context.repo.repo
-            });
-            
-            const draft = releases.data.find(r => r.draft && r.tag_name === 'v${{ steps.params.outputs.version }}');
-            
-            if (draft) {
-              await github.rest.repos.updateRelease({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                release_id: draft.id,
-                draft: false
-              });
-              console.log('RC Release published!');
-            } else {
-              console.log('No draft release found');
-            }
+          # Modify latest.json URLs to point to R2 and upload
+          if [ -f "assets/latest.json" ]; then
+            sed -i "s|https://github.com/.*/releases/download/v${VERSION}/|${{ env.R2_PUBLIC_URL }}/rc/v${VERSION}/|g" assets/latest.json
+            aws s3 cp assets/latest.json "s3://${{ env.R2_BUCKET }}/rc/latest.json" \
+              --endpoint-url "${{ env.R2_ENDPOINT }}" \
+              --content-type "application/json"
+            echo "Uploaded latest.json with R2 URLs"
+          fi
