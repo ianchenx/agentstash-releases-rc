@@ -132,7 +132,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-info-${{ matrix.target }}
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.tar.gz
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.tar.gz*
 
   publish-release:
     needs: build-macos
