@@ -94,7 +94,7 @@ jobs:
           releaseDraft: true
           prerelease: true
           includeUpdaterJson: true
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} --version ${{ steps.params.outputs.version }}
 
   sync-to-r2:
     needs: build-macos
@@ -137,15 +137,13 @@ jobs:
             echo "Uploaded: $FILENAME"
           done
           
-          # Modify latest.json: fix version and URLs
+          # Upload latest.json (version already correct from --version flag)
           if [ -f "assets/latest.json" ]; then
-            # Replace version with full RC version (e.g., 0.0.1 -> 0.0.1-rc.11)
-            jq --arg v "$VERSION" '.version = $v' assets/latest.json > tmp.json && mv tmp.json assets/latest.json
             # Replace GitHub URLs with R2 URLs
             sed -i "s|https://github.com/.*/releases/download/v${VERSION}/|${{ env.R2_PUBLIC_URL }}/rc/v${VERSION}/|g" assets/latest.json
             
             aws s3 cp assets/latest.json "s3://${{ env.R2_BUCKET }}/rc/latest.json" \
               --endpoint-url "${{ env.R2_ENDPOINT }}" \
               --content-type "application/json"
-            echo "Uploaded latest.json with version ${VERSION} and R2 URLs"
+            echo "Uploaded latest.json with R2 URLs"
           fi
