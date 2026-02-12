@@ -25,6 +25,9 @@ env:
 
 jobs:
   build-macos:
+    env:
+      RUSTUP_HOME: ${{ runner.temp }}/rustup
+      CARGO_HOME: ${{ runner.temp }}/cargo
     strategy:
       fail-fast: false
       matrix:
