@@ -63,6 +63,11 @@ jobs:
         with:
           node-version: 20
 
+      - name: Setup isolated Bun env
+        run: |
+          echo "BUN_INSTALL=$RUNNER_TEMP/bun" >> $GITHUB_ENV
+          echo "$RUNNER_TEMP/bun/bin" >> $GITHUB_PATH
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -74,18 +79,20 @@ jobs:
           echo "CARGO_HOME=$RUNNER_TEMP/cargo" >> $GITHUB_ENV
           echo "$RUNNER_TEMP/cargo/bin" >> $GITHUB_PATH
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-          profile: minimal
-
-      - name: Verify Rust toolchain and target
+      - name: Install isolated Rust toolchain
         run: |
+          if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
+            curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          fi
+          export PATH="$CARGO_HOME/bin:$PATH"
+          rustup set profile minimal
+          rustup toolchain install stable --target ${{ matrix.target }} --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.target }}
           which rustup
           which rustc
+          rustc --version
           rustup show
-          rustup target add ${{ matrix.target }}
 
       - name: Cleanup stale DMG state
         run: |
@@ -98,7 +105,7 @@ jobs:
           workspaces: './src-tauri -> target'
 
       - name: Install frontend dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Build and Release
         uses: tauri-apps/tauri-action@v0
@@ -115,6 +122,19 @@ jobs:
           prerelease: true
           includeUpdaterJson: true
           args: --target ${{ matrix.target }} --config '{"version":"${{ steps.params.outputs.version }}"}'
+
+      - name: Debug DMG bundle failure
+        if: failure()
+        run: |
+          SCRIPT="src-tauri/target/${{ matrix.target }}/release/bundle/dmg/bundle_dmg.sh"
+          if [ -f "$SCRIPT" ]; then
+            echo "===== bundle_dmg.sh ====="
+            sed -n '1,220p' "$SCRIPT"
+            echo "===== rerun with bash -x ====="
+            bash -x "$SCRIPT" || true
+          fi
+          echo "===== hdiutil info ====="
+          hdiutil info || true
 
   sync-to-r2:
     needs: build-macos
