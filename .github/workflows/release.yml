@@ -27,6 +27,7 @@ jobs:
   build-macos:
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - target: aarch64-apple-darwin
@@ -71,11 +72,25 @@ jobs:
         run: |
           echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> $GITHUB_ENV
           echo "CARGO_HOME=$RUNNER_TEMP/cargo" >> $GITHUB_ENV
+          echo "$RUNNER_TEMP/cargo/bin" >> $GITHUB_PATH
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+          profile: minimal
+
+      - name: Verify Rust toolchain and target
+        run: |
+          which rustup
+          which rustc
+          rustup show
+          rustup target add ${{ matrix.target }}
+
+      - name: Cleanup stale DMG state
+        run: |
+          hdiutil info | awk '/AgentStash/{print $1}' | xargs -n1 hdiutil detach -force || true
+          rm -rf "src-tauri/target/${{ matrix.target }}/release/bundle/dmg"
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
