@@ -121,7 +121,7 @@ jobs:
           releaseDraft: true
           prerelease: true
           includeUpdaterJson: true
-          args: --target ${{ matrix.target }} --config '{"version":"${{ steps.params.outputs.version }}"}'
+          args: --target ${{ matrix.target }} --bundles app,updater --config '{"version":"${{ steps.params.outputs.version }}"}'
 
       - name: Debug DMG bundle failure
         if: failure()
